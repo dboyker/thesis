@@ -8,11 +8,19 @@
 - Intro
 - State of the art
     - Concept
+    - Generative methods (VAE, ...)
+    - Turing Learning
+    - Types of Generative methods 
     - Different types of GAN
+    - Challenges?
 - Opportunities
-    - Data augmentation
-    - Art: generation of patterns in music, pictures, videos
-- Comparison
-    - GAN vs other generative methods
-    - GAN vs Genetic
-    - GAN vs Clustering
+    - Data augmentation (pre-training)
+    - Image processing: image from caption (https://arxiv.org/abs/1605.05396), higher resolution, day to night, ...
+    - Structured prediction
+    - Art: generation of patterns in 
+        - pictures
+        - music
+        - text
+    - Exploration in RL
+    - Representation learning (Feature Engineering) (InfoGAN?)
+- Implementation & Comparison
