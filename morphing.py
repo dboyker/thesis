@@ -11,6 +11,8 @@ from tensorflow import keras
 from tensorflow.keras.models import load_model
 from sklearn.cluster import KMeans
 import warpTriangle as wt
+import warnings
+warnings.filterwarnings("ignore")
 
 """
 mnist = keras.datasets.mnist
@@ -34,14 +36,14 @@ def find_features(img):
                                 data.append([col, row])
         kmeans = KMeans(5)
         kmeans.fit(data)  # Training
-        #labels = kmeans.predict(data)  # Prediction
-        return kmeans.cluster_centers_
+        corners = [[0, 0], [0, 27], [27, 0], [27, 27]]
+        return np.append(kmeans.cluster_centers_,np.array(corners)).reshape(9, 2)  # Add corners
 
 
-def match_features(features0, features1):
+def create_graph(features0, features1):
         """
-        Create 1-1 correspondance between features from to sets.
-        Do matching by distance optimization.
+        Create and return a bipartite graph base on two set of features.
+        The nodes of the graph are the features and the edges are the distance proximity.
         """
         graph = {}
         # Find two closest f1 for each f0 and construct graph
@@ -53,104 +55,87 @@ def match_features(features0, features1):
                         d = np.sqrt(np.power((f0[0]-f1[0]),2) + np.power((f0[1]-f1[1]),2))  # Compute distance 
                         distances_to_f1.append((d,i))  # Add distances
                 graph[j] = sorted(distances_to_f1, key=lambda x: x[0])[:4]
-        print(graph)
+        return graph
+
+
+def match_features(features0, features1):
+        """
+        Create 1-1 correspondance between features from to sets.
+        Do matching by distance optimization.
+        """
+        graph = create_graph(features0, features1)
         # Create cost matrix
         costs = []
         for k in graph:
-                #cost = np.zeros(len(features0))
                 cost = np.full(len(features0), 1000)
                 cost[graph[k][0][1]] = graph[k][0][0]
                 cost[graph[k][1][1]] = graph[k][1][0]
                 costs.append(cost.tolist())
         row_ind, col_ind = linear_sum_assignment(costs)
-        return col_ind, row_ind
+        new_centers1 = []
+        for col in col_ind:
+                new_centers1.append(features1[col])
+        features1 = new_centers1
+        return features0, features1
+        
+
+def morph(centers0, centers1, tri0):
+        synthetic_img = np.zeros(shape=(28,28))
+        for i in range(len(tri0.simplices.copy())):
+                tri = []
+                for s in tri0.simplices.copy()[i]:
+                        tri.append(centers0[s])
+                triangle0 = np.float32([tri])
+
+                tri = []
+                for s in tri0.simplices.copy()[i]:
+                        tri.append(centers1[s])
+                triangle1 = np.float32([tri])
+                imgIn = cv.imread("im0.png")
+                imgOut = np.zeros(imgIn.shape, dtype = imgIn.dtype)
+                triIn = triangle0
+                triOut = triangle1
+                wt.warpTriangle(imgIn, imgOut, triIn, triOut)   # Warp all pixels inside input triangle to output triangle
+                synthetic_img += cv.cvtColor(imgOut, cv.COLOR_BGR2GRAY)
+        synthetic_img[synthetic_img > 255] = 255
+        return synthetic_img, imgOut
+
+
+def plot(img0, img1, centers0, centers1, tri0, synthetic_img):
+        # Draw centers and corresponding labels
+        fig = plt.figure(figsize=(16,8))
+        ax0, ax1, ax2 = fig.add_subplot(2,2,1), fig.add_subplot(2,2,2), fig.add_subplot(2,2,3)
+        ax0.imshow(img0)
+        ax1.imshow(img1)
+        for i in range(len(centers0)):
+                ax0.annotate(i, centers0[i])
+                ax1.annotate(i, centers1[i])
+        # Draw triangles
+        edges = []
+        for i, tri in enumerate(tri0.simplices.copy()):
+                edge1 = (tri[0], tri[1]) 
+                edge2 = (tri[1], tri[2])
+                edge3 = (tri[2], tri[0])
+                for e in (edge1, edge2, edge3):
+                        if e not in edges and e[::-1] not in edges:
+                                edges.append(e)
+        for e in edges:
+                for c in [(centers0, ax0), (centers1, ax1)]:
+                        x0, y0 = c[0][e[0]][0], c[0][e[0]][1]
+                        x1 = c[0][e[1]][0]
+                        y1 = c[0][e[1]][1]
+                        c[1].plot([x0, x1], [y0, y1], 'ro-')
+        ax2.imshow(synthetic_img)
+        plt.show()
+
 
 
 img0 = mpimg.imread('im0.png')
 img1 = mpimg.imread('im1.png')
-
-# Find features -> clusters and clusters center
-centers0 = find_features(img0)
-centers1 = find_features(img1)
-centers0 = np.append(centers0, np.array([[0, 0], [0, 27], [27, 0], [27, 27]])).reshape(9, 2)  # Add corners
-centers1 = np.append(centers1, np.array([[0, 0], [0, 27], [27, 0], [27, 27]])).reshape(9, 2)
-
-# Match features 1 by 1
-matching0, matching1 = match_features(centers0, centers1)
-# Change centers1 order to match centers0
-new_centers1 = []
-for match in matching0:
-        new_centers1.append(centers1[match])
-centers1 = new_centers1
-# Draw centers and corresponding labels/colors
-fig = plt.figure(figsize=(16,8))
-ax0, ax1, ax2 = fig.add_subplot(2,2,1), fig.add_subplot(2,2,2), fig.add_subplot(2,2,3)
-ax0.imshow(img0)
-ax0.scatter([c[0] for c in centers0], [c[1] for c in centers0], c=matching0)
-ax1.imshow(img1)
-ax1.scatter([c[0] for c in centers1], [c[1] for c in centers1], c=matching0)
-for i in range(len(centers0)):
-        ax0.annotate(i, centers0[i])
-for i in range(len(centers1)):
-        ax1.annotate(i, centers1[i])
-
-
-# Apply Delaunay triangulation to divide picture 1 and picture 2 accordingly
+# Find and match features -> Find clusters and clusters center then match them
+centers0, centers1 = match_features(find_features(img0), find_features(img1))
+# Morph using Delaunay triangulation of images
 tri0 = Delaunay(centers0)
-
-# Draw triangles
-edges = []
-for i, tri in enumerate(tri0.simplices.copy()):
-        edge1 = (tri[0], tri[1]) 
-        edge2 = (tri[1], tri[2])
-        edge3 = (tri[2], tri[0])
-        for e in (edge1, edge2, edge3):
-                if e not in edges and e[::-1] not in edges:
-                        edges.append(e)
-for e in edges:
-        x0 = centers0[e[0]][0]
-        y0 = centers0[e[0]][1]
-        x1 = centers0[e[1]][0]
-        y1 = centers0[e[1]][1]
-        ax0.plot([x0, x1], [y0, y1], 'ro-')
-        x0 = centers1[e[0]][0]
-        y0 = centers1[e[0]][1]
-        x1 = centers1[e[1]][0]
-        y1 = centers1[e[1]][1]
-        ax1.plot([x0, x1], [y0, y1], 'ro-')
-
-# Morph
-print(img0.shape)
-#synthetic_img = np.zeros(shape=(28,28,3))
-synthetic_img = np.zeros(shape=(28,28))
-for i in range(len(tri0.simplices.copy())):
-        tri = []
-        for s in tri0.simplices.copy()[i]:
-                tri.append(centers0[s])
-        triangle0 = np.float32([tri])
-
-        tri = []
-        for s in tri0.simplices.copy()[i]:
-                tri.append(centers1[s])
-        triangle1 = np.float32([tri])
-
-
-        imgIn = cv.imread("im0.png")
-        #imgIn = img0
-        # Output image is set to white
-        imgOut = np.zeros(imgIn.shape, dtype = imgIn.dtype)
-        #imgOut = cv.imread("im1.png")
-        # Input triangle
-        triIn = triangle0
-        # Output triangle
-        triOut = triangle1
-        # Warp all pixels inside input triangle to output triangle
-        wt.warpTriangle(imgIn, imgOut, triIn, triOut)
-        # Draw triangles in input and output images.
-        print(imgOut.shape)
-        synthetic_img += cv.cvtColor(imgOut, cv.COLOR_BGR2GRAY)
-        #plt.figure()
-        #synthetic_img = imgOut
-        #plt.imshow(imgOut)
-ax2.imshow(synthetic_img)
-plt.show()
+synthetic_img, imgOut = morph(centers0, centers1, tri0)
+plt.imsave('synthetic.png', synthetic_img, cmap=matplotlib.cm.gray)
+plot(img0, img1, centers0, centers1, tri0, synthetic_img)

@@ -1,5 +1,3 @@
-
-
 # Copyright (c) 2016 Satya Mallick <spmallick@learnopencv.com>
 # All rights reserved. No warranty, explicit or implicit, provided.
 import cv2
@@ -8,22 +6,17 @@ import numpy as np
 
 # Warps and alpha blends triangular regions from img1 and img2 to img
 def warpTriangle(img1, img2, tri1, tri2) :
-    
     # Find bounding rectangle for each triangle
     r1 = cv2.boundingRect(tri1)
     r2 = cv2.boundingRect(tri2)
-    
     # Offset points by left top corner of the respective rectangles
     tri1Cropped = []
     tri2Cropped = []
-    
     for i in range(0, 3):
         tri1Cropped.append(((tri1[0][i][0] - r1[0]),(tri1[0][i][1] - r1[1])))
         tri2Cropped.append(((tri2[0][i][0] - r2[0]),(tri2[0][i][1] - r2[1])))
-
     # Crop input image
     img1Cropped = img1[r1[1]:r1[1] + r1[3], r1[0]:r1[0] + r1[2]]
-
     # Given a pair of triangles, find the affine transform.
     warpMat = cv2.getAffineTransform( np.float32(tri1Cropped), np.float32(tri2Cropped) )
     
