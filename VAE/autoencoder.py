@@ -13,7 +13,7 @@ import data_loader
 INPUT_SHAPE = (28, 28)
 INPUT_DIM = 784  # Dimension of the input data
 ENCODING_DIM = 32  # Latent representation have dimension 1
-MODEL_PATH = 'Model/Autoencoder/'
+MODEL_PATH = '../Model/Autoencoder/'
 
 
 def create_ae():
@@ -28,7 +28,7 @@ def create_ae():
     autoencoder.compile(optimizer='adadelta', loss='binary_crossentropy')  # Compile
     return encoder, decoder, autoencoder
 
-def train_ae(autoencoder, x_train, x_test):
+def train(autoencoder, x_train, x_test):
     autoencoder.fit(x_train, x_train,
                 epochs=10,
                 batch_size=256,
@@ -47,12 +47,12 @@ def save_ae(encoder, decoder, autoencoder):
     decoder.save(MODEL_PATH + 'decoder.h5')
     autoencoder.save(MODEL_PATH + 'autoencoder.h5')
 
-def get_ae(x_train, x_test):
+def AE(x_train, x_test):
     try:
         encoder, decoder, autoencoder = load_ae()
     except OSError:
         encoder, decoder, autoencoder = create_ae()
-        train_ae(autoencoder, x_train, x_test)
+        train(autoencoder, x_train, x_test)
         save_ae(encoder, decoder, autoencoder)
     encoder.summary()
     decoder.summary()
@@ -65,7 +65,7 @@ x_train, x_test, y_train, y_test, _ = data_loader.load_mnist()  # Load data
 x_train = x_train.reshape((len(x_train), np.prod(x_train.shape[1:])))
 x_test = x_test.reshape((len(x_test), np.prod(x_test.shape[1:])))
 print(x_train.shape)
-encoder, decoder, autoencoder = get_ae(x_train, x_test)  # Load model if exist
+encoder, decoder, autoencoder = AE(x_train, x_test)  # Load model if exist
 z = encoder.predict(x_test)  # Prediction - latent space
 print(z.shape)
 x_synthetic = decoder.predict(z)  # Prediction - synthetic data
