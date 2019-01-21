@@ -1,5 +1,6 @@
 import sys
 sys.path.append("..")
+import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.datasets import mnist
 from tensorflow.keras.layers import Input, Dense, Reshape, Flatten, Dropout
@@ -11,6 +12,7 @@ import matplotlib.pyplot as plt
 import csv
 import numpy as np
 from Helper import data_loader
+tf.logging.set_verbosity(tf.logging.FATAL)
 
 
 MODELS_PATH = '../Models/GAN/'
@@ -98,9 +100,10 @@ class GAN():
     def save_results(self, epoch, d_loss, acc, g_loss, sample_interval):
         #print("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[1], g_loss))
         if epoch % 100 == 0:
-            with open(RESULTS_PATH + 'loss_log.csv', 'a') as csvfile:
-                writer = csv.writer(csvfile, delimiter=';')
-                writer.writerow([epoch, d_loss, acc, g_loss])
+            print(epoch)
+            #with open(RESULTS_PATH + 'loss_log.csv', 'a') as csvfile:
+             #   writer = csv.writer(csvfile, delimiter=';')
+              #  writer.writerow([epoch, d_loss, acc, g_loss])
         if epoch % sample_interval == 0:  # Save interval
             self.sample_images(epoch)
 

@@ -6,6 +6,7 @@ Inspired from Keras website
 https://arxiv.org/abs/1312.6114
 '''
 import sys
+import os
 sys.path.append("..")
 import tensorflow as tf
 from tensorflow import keras
@@ -15,19 +16,36 @@ from tensorflow.keras.layers import Reshape, Conv2DTranspose
 from tensorflow.keras.models import Model
 from tensorflow.keras.datasets import mnist
 from tensorflow.keras.losses import mse, binary_crossentropy
-from tensorflow.keras.callbacks import TensorBoard
 from tensorflow.keras import backend as K
 from tensorflow.keras.models import load_model
 import csv
 import numpy as np
-import argparse
-import os
-import plot_vae
-from Helper import data_loader
+import matplotlib.pyplot as plt
+import seaborn as sns; sns.set()
 
 
-MODELS_PATH = '../Models/VAE/'
+MODELS_PATH = '../Models/VAE/VAE_CNN/'
 RESULTS_PATH = '../Results/VAE/'
+
+
+class Checkpoint(keras.callbacks.Callback):
+
+    def __init__(self, sample_interval, model):
+        self.epoch = 1
+        self.sample_interval = sample_interval
+        self.model = model
+
+    def on_train_begin(self, logs={}):
+        pass
+
+    def on_epoch_end(self, batch, logs={}):
+        with open('log.csv', 'a') as f:
+            f.write('%d;%f;%f\n' % (self.epoch, logs.get('loss'), logs.get('val_loss')))
+        if self.epoch % self.sample_interval == 0:
+            save_vae(model, self.epoch)
+            plot_results(model, self.epoch)
+        self.epoch += 1
+
 
 class VAE:
     
@@ -37,7 +55,6 @@ class VAE:
         self.kernel_size = 3
         self.filters = 16
         self.latent_dim = 2
-        self.epochs = 2
         self.shape = 0
         self.data = data
         self.input_shape = (data.img_size, data.img_size, 1)
@@ -84,7 +101,7 @@ class VAE:
         z = Lambda(self.sampling, output_shape=(self.latent_dim,), name='z')([z_mean, z_log_var])
         # instantiate encoder model
         encoder = Model(inputs, [z_mean, z_log_var, z], name='encoder')
-        encoder.summary()
+        #encoder.summary()
         return encoder, inputs, z_mean, z_log_var
 
     def build_decoder(self):
@@ -92,7 +109,7 @@ class VAE:
         latent_inputs = Input(shape=(self.latent_dim,), name='z_sampling')
         x = Dense(self.shape[1] * self.shape[2] * self.shape[3], activation='relu')(latent_inputs)
         x = Reshape((self.shape[1], self.shape[2], self.shape[3]))(x)
-        for i in range(2):
+        for _ in range(2):
             x = Conv2DTranspose(filters=self.filters,
                                 kernel_size=self.kernel_size,
                                 activation='relu',
@@ -105,7 +122,7 @@ class VAE:
                                 padding='same',
                                 name='decoder_output')(x)
         decoder = Model(latent_inputs, outputs, name='decoder')
-        decoder.summary()
+        #decoder.summary()
         return decoder
 
     def add_custom_loss_function(self, inputs, outputs, z_mean, z_log_var):
@@ -125,53 +142,18 @@ class VAE:
         outputs = self.decoder(self.encoder(inputs)[2])
         self.vae = Model(inputs, outputs, name='vae')
         self.add_custom_loss_function(inputs, outputs, z_mean, z_log_var)
-        self.vae.summary()
+        #self.vae.summary()
         self.vae.compile(optimizer='rmsprop')
 
-    def train(self):
-        history_callback = self.vae.fit(self.data.x_train,
-            epochs=self.epochs,
+    def train(self, epochs, sample_interval):
+        checkpoint = Checkpoint(sample_interval=sample_interval, model=self)
+        self.vae.fit(self.data.x_train,
+            epochs=epochs,
             batch_size=self.batch_size,
             validation_data=(self.data.x_test, None),
-            callbacks=[TensorBoard(log_dir='/tmp/autoencoder')])
-        loss_history = history_callback.history
-        print(type(loss_history))
-        print(loss_history['val_loss'][0])
-        with open(RESULTS_PATH + 'loss_log.csv', 'a') as f:
-            writer = csv.DictWriter(f, loss_history.keys())
-            writer.writeheader()
-            for epoch in range(self.epochs):
-                writer.writerow({
-                'val_loss':loss_history['val_loss'][epoch],
-                'loss':loss_history['loss'][epoch]
-                })
-
-
-def load_vae(model):
-    model.encoder.load_weights(MODELS_PATH + 'encoder_w.h5')
-    model.decoder.load_weights(MODELS_PATH + 'decoder_w.h5')
-    model.vae.load_weights(MODELS_PATH + 'vae_w.h5')
-
-
-def save_vae(model):
-    model.encoder.save_weights(MODELS_PATH + 'encoder_w.h5')
-    model.decoder.save_weights(MODELS_PATH + 'decoder_w.h5')
-    model.vae.save_weights(MODELS_PATH + 'vae_w.h5')
-    
-
-if __name__ == '__main__':
-    data = data_loader.DataStructure('vae')
-    model = VAE(data)
-    model.build_vae()
-    try:
-        load_vae(model)
-    except OSError:
-        model.train()
-        save_vae(model)
-    plot_vae.plot_results(
-        encoder=model.encoder, 
-        decoder=model.decoder,
-        x_test=model.data.x_test, 
-        y_test=model.data.y_test, 
-        batch_size=model.batch_size, 
-        model_name="vae_cnn")
+            callbacks=[checkpoint])
+        
+    def load(self, epoch):
+        self.encoder.load_weights(MODELS_PATH + 'encoder_w_%d.h5' % (epoch))
+        self.decoder.load_weights(MODELS_PATH + 'decoder_w_%d.h5' % (epoch))
+        self.vae.load_weights(MODELS_PATH + 'vae_w_%d.h5' % (epoch))

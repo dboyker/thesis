@@ -1,248 +1,205 @@
-"""
-An implementation of the improved WGAN described in https://arxiv.org/abs/1704.00028
-Inspired from https://github.com/keras-team/keras-contrib/blob/master/examples/improved_wgan.py
-"""
-
-import sys
-sys.path.append("..")
-import argparse
-import os
-import numpy as np
-from keras.models import Model, Sequential
-from keras.layers import Input, Dense, Reshape, Flatten
-from keras.layers.merge import _Merge
-from keras.layers.convolutional import Convolution2D, Conv2DTranspose
-from keras.layers.normalization import BatchNormalization
-from keras.layers.advanced_activations import LeakyReLU
-from keras.optimizers import Adam
+# Credits to
+# https://github.com/keras-team/keras-contrib/blob/master/examples/improved_wgan.py
 from keras.datasets import mnist
-from keras import backend as K
+from keras.layers.merge import _Merge
+from keras.layers import Input, Dense, Reshape, Flatten, Dropout
+from keras.layers import BatchNormalization, Activation, ZeroPadding2D
+from keras.layers.advanced_activations import LeakyReLU
+from keras.layers.convolutional import UpSampling2D, Conv2D
+from keras.models import Sequential, Model
+from keras.optimizers import RMSprop
 from functools import partial
-from PIL import Image
+import keras.backend as K
 import matplotlib.pyplot as plt
-import csv
+import sys
 import numpy as np
 from Helper import data_loader
 
 
-MODELS_PATH = '../Models/GAN/'
+MODELS_PATH = '../Models/GAN/DCGAN_RMS/'
 RESULTS_PATH = '../Results/GAN/'
-EPOCHS = 100
-BATCH_SIZE = 64
-TRAINING_RATIO = 5  # The training ratio is the number of discriminator updates per generator update. The paper uses 5.
-GRADIENT_PENALTY_WEIGHT = 10  # As per the paper
-
-
-def gradient_penalty_loss(y_true, y_pred, averaged_samples, gradient_penalty_weight):
-    """Calculates the gradient penalty loss for a batch of "averaged" samples.
-    In Improved WGANs, the 1-Lipschitz constraint is enforced by adding a term to the loss function
-    that penalizes the network if the gradient norm moves away from 1. However, it is impossible to evaluate
-    this function at all points in the input space. The compromise used in the paper is to choose random points
-    on the lines between real and generated samples, and check the gradients at these points. Note that it is the
-    gradient w.r.t. the input averaged samples, not the weights of the discriminator, that we're penalizing!
-    In order to evaluate the gradients, we must first run samples through the generator and evaluate the loss.
-    Then we get the gradients of the discriminator w.r.t. the input averaged samples.
-    The l2 norm and penalty can then be calculated for this gradient.
-    Note that this loss function requires the original averaged samples as input, but Keras only supports passing
-    y_true and y_pred to loss functions. To get around this, we make a partial() of the function with the
-    averaged_samples argument, and use that for model training."""
-    # first get the gradients:
-    #   assuming: - that y_pred has dimensions (batch_size, 1)
-    #             - averaged_samples has dimensions (batch_size, nbr_features)
-    # gradients afterwards has dimension (batch_size, nbr_features), basically
-    # a list of nbr_features-dimensional gradient vectors
-    gradients = K.gradients(y_pred, averaged_samples)[0]
-    # compute the euclidean norm by squaring ...
-    gradients_sqr = K.square(gradients)
-    #   ... summing over the rows ...
-    gradients_sqr_sum = K.sum(gradients_sqr,
-                              axis=np.arange(1, len(gradients_sqr.shape)))
-    #   ... and sqrt
-    gradient_l2_norm = K.sqrt(gradients_sqr_sum)
-    # compute lambda * (1 - ||grad||)^2 still for each single sample
-    gradient_penalty = gradient_penalty_weight * K.square(1 - gradient_l2_norm)
-    # return the mean as loss over all the batch samples
-    return K.mean(gradient_penalty)
 
 
 class RandomWeightedAverage(_Merge):
-    """Takes a randomly-weighted average of two tensors. In geometric terms, this outputs a random point on the line
-    between each pair of input points.
-    Inheriting from _Merge is a little messy but it was the quickest solution I could think of.
-    Improvements appreciated."""
-
+    """Provides a (random) weighted average between real and generated image samples"""
     def _merge_function(self, inputs):
-        weights = K.random_uniform((BATCH_SIZE, 1, 1, 1))
-        return (weights * inputs[0]) + ((1 - weights) * inputs[1])
+        alpha = K.random_uniform((32, 1, 1, 1))
+        return (alpha * inputs[0]) + ((1 - alpha) * inputs[1])
 
-
-def wasserstein_loss(y_true, y_pred):
-    return K.mean(y_true * y_pred)
-
-
-class GAN():
-
+class DCGAN():
     def __init__(self, data):
         self.data = data
-        self.img_shape = (data.img_size, data.img_size, 1)
+        self.img_rows = data.img_size
+        self.channels = 1
+        self.img_shape = (data.img_size, data.img_size, self.channels)
         self.latent_dim = 100
-       
-        generator_m = self.build_generator()
-        discriminator_m = self.build_discriminator()
+        # Following parameter and optimizer set as recommended in paper
+        self.n_critic = 5
+        optimizer = RMSprop(lr=0.00005)
+        # Build the generator and critic
+        self.generator = self.build_generator()
+        self.discriminator = self.build_critic()
 
+        #-------------------------------
+        # Construct Computational Graph
+        #       for the Critic
+        #-------------------------------
 
-        # The generator_model is used when we want to train the generator layers.
-        # As such, we ensure that the discriminator layers are not trainable.
-        # Note that once we compile this model, updating .trainable will have no effect within it. As such, it
-        # won't cause problems if we later set discriminator.trainable = True for the discriminator_model, as long
-        # as we compile the generator_model first.
-        for layer in discriminator_m.layers:
-            layer.trainable = False
-        discriminator_m.trainable = False
-        generator_input = Input(shape=(100,))
-        generator_layers = generator_m(generator_input)
-        discriminator_layers_for_generator = discriminator_m(generator_layers)
-        self.generator = Model(inputs=[generator_input], outputs=[discriminator_layers_for_generator])
-        # We use the Adam paramaters from Gulrajani et al.
-        self.generator.compile(optimizer=Adam(0.0001, beta_1=0.5, beta_2=0.9), loss=wasserstein_loss)
+        # Freeze generator's layers while training critic
+        self.generator.trainable = False
 
-        # Now that the generator is compiled, we can make the discriminator layers trainable.
-        for layer in discriminator_m.layers:
-            layer.trainable = True
-        for layer in generator_m.layers:
-            layer.trainable = False
-        discriminator_m.trainable = True
-        generator_m.trainable = False
+        # Image input (real sample)
+        real_img = Input(shape=self.img_shape)
 
-        # The discriminator_model is more complex. It takes both real image samples and random noise seeds as input.
-        # The noise seed is run through the generator model to get generated images. Both real and generated images
-        # are then run through the discriminator. Although we could concatenate the real and generated images into a
-        # single tensor, we don't (see model compilation for why).
-        real_samples = Input(shape=self.data.x_train.shape[1:])
-        generator_input_for_discriminator = Input(shape=(100,))
-        generated_samples_for_discriminator = generator_m(generator_input_for_discriminator)
-        discriminator_output_from_generator = discriminator_m(generated_samples_for_discriminator)
-        discriminator_output_from_real_samples = discriminator_m(real_samples)
+        # Noise input
+        z_disc = Input(shape=(self.latent_dim,))
+        # Generate image based of noise (fake sample)
+        fake_img = self.generator(z_disc)
 
-        # We also need to generate weighted-averages of real and generated samples, to use for the gradient norm penalty.
-        averaged_samples = RandomWeightedAverage()([real_samples, generated_samples_for_discriminator])
-        # We then run these samples through the discriminator as well. Note that we never really use the discriminator
-        # output for these samples - we're only running them to get the gradient norm for the gradient penalty loss.
-        averaged_samples_out = discriminator_m(averaged_samples)
+        # Discriminator determines validity of the real and fake images
+        fake = self.discriminator(fake_img)
+        valid = self.discriminator(real_img)
 
-        # The gradient penalty loss function requires the input averaged samples to get gradients. However,
-        # Keras loss functions can only have two arguments, y_true and y_pred. We get around this by making a partial()
-        # of the function with the averaged samples here.
-        partial_gp_loss = partial(gradient_penalty_loss,
-                                averaged_samples=averaged_samples,
-                                gradient_penalty_weight=GRADIENT_PENALTY_WEIGHT)
-        partial_gp_loss.__name__ = 'gradient_penalty'  # Functions need names or Keras will throw an error
+        # Construct weighted average between real and fake images
+        interpolated_img = RandomWeightedAverage()([real_img, fake_img])
+        # Determine validity of weighted sample
+        validity_interpolated = self.discriminator(interpolated_img)
 
-        # Keras requires that inputs and outputs have the same number of samples. This is why we didn't concatenate the
-        # real samples and generated samples before passing them to the discriminator: If we had, it would create an
-        # output with 2 * BATCH_SIZE samples, while the output of the "averaged" samples for gradient penalty
-        # would have only BATCH_SIZE samples.
+        # Use Python partial to provide loss function with additional
+        # 'averaged_samples' argument
+        partial_gp_loss = partial(self.gradient_penalty_loss,
+                          averaged_samples=interpolated_img)
+        partial_gp_loss.__name__ = 'gradient_penalty' # Keras requires function names
 
-        # If we don't concatenate the real and generated samples, however, we get three outputs: One of the generated
-        # samples, one of the real samples, and one of the averaged samples, all of size BATCH_SIZE. This works neatly!
-        self.discriminator = Model(inputs=[real_samples, generator_input_for_discriminator],
-                                    outputs=[discriminator_output_from_real_samples,
-                                            discriminator_output_from_generator,
-                                            averaged_samples_out])
-        # We use the Adam paramaters from Gulrajani et al. We use the Wasserstein loss for both the real and generated
-        # samples, and the gradient penalty loss for the averaged samples.
-        self.discriminator.compile(optimizer=Adam(0.0001, beta_1=0.5, beta_2=0.9),
-                                    loss=[wasserstein_loss,
-                                        wasserstein_loss,
-                                        partial_gp_loss])
-        self.generator.summary()
-        self.discriminator.summary()
+        self.discriminator_model = Model(inputs=[real_img, z_disc],
+                            outputs=[valid, fake, validity_interpolated])
+        self.discriminator_model.compile(loss=[self.wasserstein_loss,
+                                              self.wasserstein_loss,
+                                              partial_gp_loss],
+                                        optimizer=optimizer,
+                                        loss_weights=[1, 1, 10])
 
+        self.discriminator.trainable = False
+        self.generator.trainable = True
+
+        # Sampled noise for input to generator
+        z_gen = Input(shape=(100,))
+        # Generate images based of noise
+        img = self.generator(z_gen)
+        # Discriminator determines validity
+        valid = self.discriminator(img)
+        # Defines generator model
+        self.generator_model = Model(z_gen, valid)
+        self.generator_model.compile(loss=self.wasserstein_loss, optimizer=optimizer)
+
+    def gradient_penalty_loss(self, y_true, y_pred, averaged_samples):
+        """
+        Computes gradient penalty based on prediction and weighted real / fake samples
+        """
+        gradients = K.gradients(y_pred, averaged_samples)[0]
+        # compute the euclidean norm by squaring ...
+        gradients_sqr = K.square(gradients)
+        #   ... summing over the rows ...
+        gradients_sqr_sum = K.sum(gradients_sqr,
+                                  axis=np.arange(1, len(gradients_sqr.shape)))
+        #   ... and sqrt
+        gradient_l2_norm = K.sqrt(gradients_sqr_sum)
+        # compute lambda * (1 - ||grad||)^2 still for each single sample
+        gradient_penalty = K.square(1 - gradient_l2_norm)
+        # return the mean as loss over all the batch samples
+        return K.mean(gradient_penalty)
+
+    def wasserstein_loss(self, y_true, y_pred):
+        return K.mean(y_true * y_pred)
 
     def build_generator(self):
         model = Sequential()
-        model.add(Dense(1024, input_dim=100))
-        model.add(LeakyReLU())
-        model.add(Dense(128 * 7 * 7))
-        model.add(BatchNormalization())
-        model.add(LeakyReLU())
-        if K.image_data_format() == 'channels_first':
-            model.add(Reshape((128, 7, 7), input_shape=(128 * 7 * 7,)))
-            bn_axis = 1
-        else:
-            model.add(Reshape((7, 7, 128), input_shape=(128 * 7 * 7,)))
-            bn_axis = -1
-        model.add(Conv2DTranspose(128, (5, 5), strides=2, padding='same'))
-        model.add(BatchNormalization(axis=bn_axis))
-        model.add(LeakyReLU())
-        model.add(Convolution2D(64, (5, 5), padding='same'))
-        model.add(BatchNormalization(axis=bn_axis))
-        model.add(LeakyReLU())
-        model.add(Conv2DTranspose(64, (5, 5), strides=2, padding='same'))
-        model.add(BatchNormalization(axis=bn_axis))
-        model.add(LeakyReLU())
-        model.add(Convolution2D(1, (5, 5), padding='same', activation='tanh'))  
-        # Because we normalized training inputs to lie in the range [-1, 1], the tanh function should be used
-        return model
+        model.add(Dense(128 * 7 * 7, activation="relu", input_dim=self.latent_dim))
+        model.add(Reshape((7, 7, 128)))
+        model.add(UpSampling2D())
+        model.add(Conv2D(128, kernel_size=4, padding="same"))
+        model.add(BatchNormalization(momentum=0.8))
+        model.add(Activation("relu"))
+        model.add(UpSampling2D())
+        model.add(Conv2D(64, kernel_size=4, padding="same"))
+        model.add(BatchNormalization(momentum=0.8))
+        model.add(Activation("relu"))
+        model.add(Conv2D(self.channels, kernel_size=4, padding="same"))
+        model.add(Activation("tanh"))
+        model.summary()
+        noise = Input(shape=(self.latent_dim,))
+        img = model(noise)
+        return Model(noise, img)
 
-
-    def build_discriminator(self):
+    def build_critic(self):
         model = Sequential()
-        if K.image_data_format() == 'channels_first':
-            model.add(Convolution2D(64, (5, 5), padding='same', input_shape=(1, 28, 28)))
-        else:
-            model.add(Convolution2D(64, (5, 5), padding='same', input_shape=(28, 28, 1)))
-        model.add(LeakyReLU())
-        model.add(Convolution2D(128, (5, 5), kernel_initializer='he_normal', strides=[2, 2]))
-        model.add(LeakyReLU())
-        model.add(Convolution2D(128, (5, 5), kernel_initializer='he_normal', padding='same', strides=[2, 2]))
-        model.add(LeakyReLU())
+        model.add(Conv2D(16, kernel_size=3, strides=2, input_shape=self.img_shape, padding="same"))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(Dropout(0.25))
+        model.add(Conv2D(32, kernel_size=3, strides=2, padding="same"))
+        model.add(ZeroPadding2D(padding=((0,1),(0,1))))
+        model.add(BatchNormalization(momentum=0.8))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(Dropout(0.25))
+        model.add(Conv2D(64, kernel_size=3, strides=2, padding="same"))
+        model.add(BatchNormalization(momentum=0.8))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(Dropout(0.25))
+        model.add(Conv2D(128, kernel_size=3, strides=1, padding="same"))
+        model.add(BatchNormalization(momentum=0.8))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(Dropout(0.25))
         model.add(Flatten())
-        model.add(Dense(1024, kernel_initializer='he_normal'))
-        model.add(LeakyReLU())
-        model.add(Dense(1, kernel_initializer='he_normal'))
-        return model
+        model.add(Dense(1))
+        model.summary()
+        img = Input(shape=self.img_shape)
+        validity = model(img)
+        return Model(img, validity)
 
+    def train_discriminator(self, batch_size, noise, valid, fake, dummy):
+        idx = np.random.randint(0, self.data.x_train.shape[0], batch_size)
+        imgs = self.data.x_train[idx]
+        return self.discriminator_model.train_on_batch([imgs, noise], [valid, fake, dummy])
 
-    def train(self, epochs):
-        valid = np.ones((BATCH_SIZE, 1), dtype=np.float32)
-        fake = -valid
-        dummy = np.zeros((BATCH_SIZE, 1), dtype=np.float32)   # gradient_penalty loss function and is not used.
+    def train_generator(self, noise, valid):
+        return self.generator_model.train_on_batch(noise, valid)
+
+    def train(self, epochs, batch_size, sample_interval=50):
+        # Load the dataset
+        (self.data.x_train, _), (_, _) = mnist.load_data()
+        # Rescale -1 to 1
+        self.data.x_train = (self.data.x_train.astype(np.float32) - 127.5) / 127.5
+        self.data.x_train = np.expand_dims(self.data.x_train, axis=3)
+        # Adversarial ground truths
+        valid = -np.ones((batch_size, 1))
+        fake =  np.ones((batch_size, 1))
+        dummy = np.zeros((batch_size, 1)) # Dummy gt for gradient penalty
         for epoch in range(epochs):
-            np.random.shuffle(self.data.x_train)
-            d_loss = []
-            g_loss = []
-            minibatches_size = BATCH_SIZE * TRAINING_RATIO
-            for i in range(int(self.data.x_train.shape[0] // minibatches_size)):
-                discriminator_minibatches = self.data.x_train[i * minibatches_size:(i + 1) * minibatches_size]
-                for j in range(TRAINING_RATIO):  # Number of discriminator update per generator update
-                    image_batch = discriminator_minibatches[j * BATCH_SIZE:(j + 1) * BATCH_SIZE]
-                    noise = np.random.rand(BATCH_SIZE, 100).astype(np.float32)
-                    d_loss.append(self.discriminator.train_on_batch([image_batch, noise],
-                                                                                [valid, fake, dummy]))
-                g_loss.append(self.generator.train_on_batch(np.random.rand(BATCH_SIZE, 100), valid))
-                print("Epoch: %d, Minibatch: %d/%d" % (epoch, i, int(self.data.x_train.shape[0] // minibatches_size)))
+            for _ in range(self.n_critic):
+                noise = np.random.normal(0, 1, (batch_size, self.latent_dim))
+                d_loss = self.train_discriminator(batch_size, noise, valid, fake, dummy)
+            g_loss = self.train_generator(noise, valid)
+            print ("%d [D loss: %f] [G loss: %f]" % (epoch, d_loss[0], g_loss))
+            if epoch % sample_interval == 0:
+                self.sample_images(epoch)
 
-  
+    def sample_images(self, epoch):
+        r, c = 5, 5
+        noise = np.random.normal(0, 1, (r * c, self.latent_dim))
+        gen_imgs = self.generator.predict(noise)
+        # Rescale images 0 - 1
+        gen_imgs = 0.5 * gen_imgs + 1
+        fig, axs = plt.subplots(r, c)
+        cnt = 0
+        for i in range(r):
+            for j in range(c):
+                axs[i,j].imshow(gen_imgs[cnt, :,:,0], cmap='gray')
+                axs[i,j].axis('off')
+                cnt += 1
+        fig.savefig("images/mnist_%d.png" % epoch)
+        plt.close()
 
-def load_gan(model):
-    model.discriminator.load_weights(MODELS_PATH + 'discriminator_w.h5')
-    model.generator.load_weights(MODELS_PATH + 'generator_w.h5')
+    def load(self, epoch):
+        self.discriminator.load_weights(MODELS_PATH + 'wpdcgan_discriminator_w_%d.h5' % epoch)
+        self.generator.load_weights(MODELS_PATH + 'wpdcgan_generator_w_%d.h5' epoch)
 
-
-def save_gan(model):
-    model.discriminator.save_weights(MODELS_PATH + 'discriminator_w.h5')
-    model.generator.save_weights(MODELS_PATH + 'generator_w.h5')
-    model.discriminator.save_model(MODELS_PATH + 'discriminator_m.h5')
-    model.generator.save_model(MODELS_PATH + 'generator_m.h5')
-
-
-if __name__ == '__main__':
-    data = data_loader.DataStructure('dcgan')
-    model = GAN(data)
-    model.train(epochs=EPOCHS)
-    #try:
-    #    load_gan(model)
-    #except OSError:
-        #model.train(epochs=EPOCHS)
-        #save_gan(model)

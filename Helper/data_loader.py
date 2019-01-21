@@ -33,20 +33,11 @@ class DataStructure:
             x_test = np.reshape(x_test, [-1, img_size, img_size, 1])
             x_train = x_train.astype('float32') / 255
             x_test = x_test.astype('float32') / 255
-            return x_train, x_test, y_train, y_test, img_size
+            return x_train[:100], x_test[:100], y_train[:100], y_test[:100], img_size
         elif type == 'gan':
             # -> GAN
             (x_train, y_train), (x_test, y_test) = mnist.load_data()
             img_size = x_train.shape[1]
             x_train = x_train / 127.5 - 1.  # Rescale -1 to 1
             x_train = np.expand_dims(x_train, axis=3)
-            return x_train, x_test, y_train, y_test, img_size
-        elif type == 'dcgan':
-            (x_train, y_train), (x_test, y_test) = mnist.load_data()
-            img_size = x_train.shape[1]
-            if K.image_data_format() == 'channels_first':
-                x_train = x_train.reshape((x_train.shape[0], 1, x_train.shape[1], x_train.shape[2]))
-            else:
-                x_train = x_train.reshape((x_train.shape[0], x_train.shape[1], x_train.shape[2], 1))
-            x_train = (x_train.astype(np.float32)) / 127.5 - 1
             return x_train, x_test, y_train, y_test, img_size
