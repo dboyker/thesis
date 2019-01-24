@@ -25,7 +25,7 @@ import seaborn as sns; sns.set()
 
 
 MODELS_PATH = '../Models/VAE/VAE_CNN/'
-RESULTS_PATH = '../Results/VAE/'
+RESULTS_PATH = '../Results/VAE_CNN/'
 
 
 class Checkpoint(keras.callbacks.Callback):
@@ -54,7 +54,7 @@ class VAE:
         self.batch_size = 128
         self.kernel_size = 3
         self.filters = 16
-        self.latent_dim = 2
+        self.latent_dim = 8
         self.shape = 0
         self.data = data
         self.input_shape = (data.img_size, data.img_size, 1)

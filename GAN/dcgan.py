@@ -17,13 +17,13 @@ from Helper import data_loader
 
 
 MODELS_PATH = '../Models/GAN/DCGAN_RMS/'
-RESULTS_PATH = '../Results/GAN/'
+RESULTS_PATH = '../Results/DCGAN/'
 
 
 class RandomWeightedAverage(_Merge):
     """Provides a (random) weighted average between real and generated image samples"""
     def _merge_function(self, inputs):
-        alpha = K.random_uniform((32, 1, 1, 1))
+        alpha = K.random_uniform((128, 1, 1, 1))
         return (alpha * inputs[0]) + ((1 - alpha) * inputs[1])
 
 class DCGAN():
@@ -136,7 +136,7 @@ class DCGAN():
         model.add(Conv2D(16, kernel_size=3, strides=2, input_shape=self.img_shape, padding="same"))
         model.add(LeakyReLU(alpha=0.2))
         model.add(Dropout(0.25))
-        model.add(Conv2D(32, kernel_size=3, strides=2, padding="same"))
+        model.add(Conv2D(128, kernel_size=3, strides=2, padding="same"))
         model.add(ZeroPadding2D(padding=((0,1),(0,1))))
         model.add(BatchNormalization(momentum=0.8))
         model.add(LeakyReLU(alpha=0.2))
@@ -182,24 +182,3 @@ class DCGAN():
             print ("%d [D loss: %f] [G loss: %f]" % (epoch, d_loss[0], g_loss))
             if epoch % sample_interval == 0:
                 self.sample_images(epoch)
-
-    def sample_images(self, epoch):
-        r, c = 5, 5
-        noise = np.random.normal(0, 1, (r * c, self.latent_dim))
-        gen_imgs = self.generator.predict(noise)
-        # Rescale images 0 - 1
-        gen_imgs = 0.5 * gen_imgs + 1
-        fig, axs = plt.subplots(r, c)
-        cnt = 0
-        for i in range(r):
-            for j in range(c):
-                axs[i,j].imshow(gen_imgs[cnt, :,:,0], cmap='gray')
-                axs[i,j].axis('off')
-                cnt += 1
-        fig.savefig("images/mnist_%d.png" % epoch)
-        plt.close()
-
-    def load(self, epoch):
-        self.discriminator.load_weights(MODELS_PATH + 'wpdcgan_discriminator_w_%d.h5' % epoch)
-        self.generator.load_weights(MODELS_PATH + 'wpdcgan_generator_w_%d.h5' epoch)
-

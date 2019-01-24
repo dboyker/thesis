@@ -282,7 +282,7 @@ def plot(precision_recall_pairs, labels=None, out_path=None,
   Raises:
     ValueError: If labels is a list of different length than list_of_prd_data.
   """
-  np.save('./Tmp/precision_recall_pairs.npy', precision_recall_pairs)
+  np.save('./Tmp/pr.npy', precision_recall_pairs)
   if labels is not None and len(labels) != len(precision_recall_pairs):
     raise ValueError(
         'Length of labels %d must be identical to length of '
